@@ -68,14 +68,8 @@ Found while reviewing the code for this repo:
 - Validation, archive and cleanup activities are **disabled** and marked "succeeded" when skipped, so the validation-failure branch cannot fire.
 - Archive uses a CSV copy with type conversion; a binary copy would preserve files byte for byte.
 
-**Master pipeline (`pl_ridership_master`)**
-- Failure / success notifications are disabled; error messages are hard-coded instead of `@activity(...).error.message`.
-- The JSON body is built by string concatenation (breaks on quotes) and the signed webhook URL is logged because `secureInput` is off.
-- `p_target_table` is passed empty and `p_workspace_name` is unused.
 
-**Notebooks**
-- `02_silver_transform` builds log IDs with Python's `hash()`, which is randomized per process, so IDs aren't reproducible; `03_gold_transform` already uses a stable SHA-256 (`stable_bigint`) and Silver should too.
-- The event-driven pipeline reads the older `admin_sch.load_control` while the notebooks use `admin_ops.admin_load_control`; consolidating on one control table is the next step.
+
 
 ## Tech
 
