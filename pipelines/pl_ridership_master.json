@@ -1,0 +1,252 @@
+{
+  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "logic_app_connection": {
+      "type": "string"
+    }
+  },
+  "variables": {},
+  "resources": [
+    {
+      "name": "pl_ridership_master",
+      "type": "pipelines",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "activities": [
+          {
+            "name": "source_to_bronze",
+            "type": "TridentNotebook",
+            "dependsOn": [],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 1,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "notebookId": "<NB_SOURCE_TO_BRONZE_ID>",
+              "workspaceId": "<WORKSPACE_ID>",
+              "parameters": {
+                "p_source_key": {
+                  "value": {
+                    "value": "@pipeline().parameters.p_source_key",
+                    "type": "Expression"
+                  },
+                  "type": "string"
+                },
+                "p_api_key": {
+                  "value": "",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "bronze_to_silver",
+            "type": "TridentNotebook",
+            "dependsOn": [
+              {
+                "activity": "source_to_bronze",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 1,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "notebookId": "<NB_BRONZE_TO_SILVER_ID>",
+              "workspaceId": "<WORKSPACE_ID>"
+            }
+          },
+          {
+            "name": "silver_to_gold",
+            "type": "TridentNotebook",
+            "dependsOn": [
+              {
+                "activity": "bronze_to_silver",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 1,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "notebookId": "<NB_SILVER_TO_GOLD_ID>",
+              "workspaceId": "<WORKSPACE_ID>",
+              "parameters": {
+                "p_target_table": {
+                  "value": "",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "name": "bronze_failure_notification",
+            "type": "WebActivity",
+            "state": "Inactive",
+            "onInactiveMarkAs": "Succeeded",
+            "dependsOn": [
+              {
+                "activity": "source_to_bronze",
+                "dependencyConditions": [
+                  "Failed"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "relativeUrl": "<LOGIC_APP_TRIGGER_PATH>",
+              "body": {
+                "value": "@concat(\n'{',\n'\"system\":\"Ridership Fabric\",',\n'\"pipeline_name\":\"',pipeline().Pipeline,'\",',\n'\"run_id\":\"',pipeline().RunId,'\",',\n'\"status\":\"FAILED\",',\n'\"completed_activity\":\"source_to_bronze\",',\n'\"execution_time\":\"',utcNow(),'\",',\n'\"error_message\":\"source_to_bronze failed\"',\n'}'\n)",
+                "type": "Expression"
+              }
+            },
+            "externalReferences": {
+              "connection": "[parameters('logic_app_connection')]"
+            }
+          },
+          {
+            "name": "silver_failure_notification",
+            "type": "WebActivity",
+            "state": "Inactive",
+            "onInactiveMarkAs": "Succeeded",
+            "dependsOn": [
+              {
+                "activity": "bronze_to_silver",
+                "dependencyConditions": [
+                  "Failed"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "relativeUrl": "<LOGIC_APP_TRIGGER_PATH>",
+              "body": {
+                "value": "@concat(\n'{',\n'\"system\":\"Ridership Fabric\",',\n'\"pipeline_name\":\"',pipeline().Pipeline,'\",',\n'\"run_id\":\"',pipeline().RunId,'\",',\n'\"status\":\"FAILED\",',\n'\"completed_activity\":\"bronze_to_silver\",',\n'\"execution_time\":\"',utcNow(),'\",',\n'\"error_message\":\"bronze_to_silver failed\"',\n'}'\n)",
+                "type": "Expression"
+              }
+            },
+            "externalReferences": {
+              "connection": "[parameters('logic_app_connection')]"
+            }
+          },
+          {
+            "name": "gold_failure_notification",
+            "type": "WebActivity",
+            "state": "Inactive",
+            "onInactiveMarkAs": "Succeeded",
+            "dependsOn": [
+              {
+                "activity": "silver_to_gold",
+                "dependencyConditions": [
+                  "Failed"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "relativeUrl": "<LOGIC_APP_TRIGGER_PATH>",
+              "body": {
+                "value": "@concat(\n'{',\n'\"system\":\"Ridership Fabric\",',\n'\"pipeline_name\":\"',pipeline().Pipeline,'\",',\n'\"run_id\":\"',pipeline().RunId,'\",',\n'\"status\":\"FAILED\",',\n'\"completed_activity\":\"silver_to_gold\",',\n'\"execution_time\":\"',utcNow(),'\",',\n'\"error_message\":\"silver_to_gold failed\"',\n'}'\n)",
+                "type": "Expression"
+              }
+            },
+            "externalReferences": {
+              "connection": "[parameters('logic_app_connection')]"
+            }
+          },
+          {
+            "name": "Web1",
+            "type": "WebActivity",
+            "state": "Inactive",
+            "onInactiveMarkAs": "Succeeded",
+            "dependsOn": [
+              {
+                "activity": "silver_to_gold",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "method": "POST",
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "relativeUrl": "<LOGIC_APP_TRIGGER_PATH>",
+              "body": {
+                "value": "@concat(\n'{',\n'\"system\":\"Ridership Fabric\",',\n'\"pipeline_name\":\"',pipeline().Pipeline,'\",',\n'\"run_id\":\"',pipeline().RunId,'\",',\n'\"status\":\"SUCCESS\",',\n'\"completed_activity\":\"silver_to_gold\",',\n'\"execution_time\":\"',utcNow(),'\",',\n'\"error_message\":\"\"',\n'}'\n)",
+                "type": "Expression"
+              }
+            },
+            "externalReferences": {
+              "connection": "[parameters('logic_app_connection')]"
+            }
+          }
+        ],
+        "parameters": {
+          "p_source_key": {
+            "type": "string"
+          },
+          "p_workspace_name": {
+            "type": "string",
+            "defaultValue": "<WORKSPACE_NAME>"
+          }
+        }
+      },
+      "dependsOn": []
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+# Raw exports with environment details - never commit
+_originals_do_not_commit/
+
+.env
+*.env
+__pycache__/
+.ipynb_checkpoints/
+*.csv
+*.parquet
+*.xlsx

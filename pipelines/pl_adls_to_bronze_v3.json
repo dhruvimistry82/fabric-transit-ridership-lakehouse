@@ -1,0 +1,1077 @@
+{
+  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "lh_metadata": {
+      "type": "string"
+    },
+    "adls_connection": {
+      "type": "string"
+    },
+    "outlook_connection": {
+      "type": "string"
+    }
+  },
+  "variables": {},
+  "resources": [
+    {
+      "name": "pl_adls_to_bronze_v3",
+      "type": "pipelines",
+      "apiVersion": "2018-06-01",
+      "properties": {
+        "activities": [
+          {
+            "name": "set_folder_clean",
+            "type": "SetVariable",
+            "dependsOn": [],
+            "policy": {
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "variableName": "v_folder_clean",
+              "value": {
+                "value": "@toLower(replace(replace(replace(coalesce(pipeline().parameters.p_folder_path, pipeline().parameters.p_source_folder, ''), '\\', '/'), 'landing/', ''), '/landing/', ''))",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "lookup_control_table",
+            "type": "Lookup",
+            "dependsOn": [
+              {
+                "activity": "set_folder_clean",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "source": {
+                "type": "LakehouseTableSource"
+              },
+              "firstRowOnly": false,
+              "datasetSettings": {
+                "annotations": [],
+                "linkedService": {
+                  "name": "lh_metadata",
+                  "properties": {
+                    "annotations": [],
+                    "type": "Lakehouse",
+                    "typeProperties": {
+                      "workspaceId": "<WORKSPACE_ID>",
+                      "artifactId": "[parameters('lh_metadata')]",
+                      "rootFolder": "Tables"
+                    }
+                  }
+                },
+                "type": "LakehouseTable",
+                "schema": [],
+                "typeProperties": {
+                  "schema": "admin_sch",
+                  "table": "load_control"
+                }
+              }
+            }
+          },
+          {
+            "name": "filter_matching_source",
+            "type": "Filter",
+            "dependsOn": [
+              {
+                "activity": "lookup_control_table",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "items": {
+                "value": "@activity('lookup_control_table').output.value",
+                "type": "Expression"
+              },
+              "condition": {
+                "value": "@and(and(or(equals(item().active_flag,true),equals(toUpper(string(item().active_flag)),'TRUE')),equals(toUpper(string(item().layer)),'BRONZE')),or(equals(toUpper(pipeline().parameters.p_ingest_mode),'ALL'),and(equals(toLower(string(item().source_folder)),variables('v_folder_clean')),equals(toLower(string(item().source_file_name)),toLower(string(pipeline().parameters.p_file_name))))))",
+                "type": "Expression"
+              }
+            }
+          },
+          {
+            "name": "if_source_matched",
+            "type": "IfCondition",
+            "dependsOn": [
+              {
+                "activity": "filter_matching_source",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "typeProperties": {
+              "expression": {
+                "value": "@greater(length(activity('filter_matching_source').output.value),0)",
+                "type": "Expression"
+              },
+              "ifFalseActivities": [
+                {
+                  "name": "cp_copy_to_rejected",
+                  "type": "Copy",
+                  "state": "Inactive",
+                  "onInactiveMarkAs": "Succeeded",
+                  "dependsOn": [],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "source": {
+                      "type": "DelimitedTextSource",
+                      "storeSettings": {
+                        "type": "AzureBlobFSReadSettings",
+                        "recursive": true,
+                        "enablePartitionDiscovery": false
+                      },
+                      "formatSettings": {
+                        "type": "DelimitedTextReadSettings"
+                      },
+                      "datasetSettings": {
+                        "annotations": [],
+                        "type": "DelimitedText",
+                        "typeProperties": {
+                          "location": {
+                            "type": "AzureBlobFSLocation",
+                            "fileName": {
+                              "value": "@pipeline().parameters.p_file_name",
+                              "type": "Expression"
+                            },
+                            "folderPath": {
+                              "value": "@pipeline().parameters.p_folder_path",
+                              "type": "Expression"
+                            },
+                            "fileSystem": "landing"
+                          },
+                          "columnDelimiter": ",",
+                          "escapeChar": "\\",
+                          "firstRowAsHeader": true,
+                          "quoteChar": "\""
+                        },
+                        "schema": [],
+                        "externalReferences": {
+                          "connection": "[parameters('adls_connection')]"
+                        }
+                      }
+                    },
+                    "sink": {
+                      "type": "DelimitedTextSink",
+                      "storeSettings": {
+                        "type": "AzureBlobFSWriteSettings"
+                      },
+                      "formatSettings": {
+                        "type": "DelimitedTextWriteSettings",
+                        "fileExtension": ".txt"
+                      },
+                      "datasetSettings": {
+                        "annotations": [],
+                        "type": "DelimitedText",
+                        "typeProperties": {
+                          "location": {
+                            "type": "AzureBlobFSLocation",
+                            "fileName": {
+                              "value": "@pipeline().parameters.p_file_name",
+                              "type": "Expression"
+                            },
+                            "folderPath": {
+                              "value": "@concat('unmatched/',pipeline().parameters.p_folder_path)",
+                              "type": "Expression"
+                            },
+                            "fileSystem": "rejected"
+                          },
+                          "columnDelimiter": ",",
+                          "escapeChar": "\\",
+                          "firstRowAsHeader": true,
+                          "quoteChar": "\""
+                        },
+                        "schema": [],
+                        "externalReferences": {
+                          "connection": "[parameters('adls_connection')]"
+                        }
+                      }
+                    },
+                    "enableStaging": false,
+                    "translator": {
+                      "type": "TabularTranslator",
+                      "typeConversion": true,
+                      "typeConversionSettings": {
+                        "allowDataTruncation": true,
+                        "treatBooleanAsNumber": false
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "del_landing_file_unmatched",
+                  "type": "Delete",
+                  "state": "Inactive",
+                  "onInactiveMarkAs": "Succeeded",
+                  "dependsOn": [
+                    {
+                      "activity": "cp_copy_to_rejected",
+                      "dependencyConditions": [
+                        "Succeeded"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "datasetSettings": {
+                      "annotations": [],
+                      "type": "Binary",
+                      "typeProperties": {
+                        "location": {
+                          "type": "AzureBlobFSLocation",
+                          "fileName": {
+                            "value": "@pipeline().parameters.p_file_name",
+                            "type": "Expression"
+                          },
+                          "folderPath": {
+                            "value": "@pipeline().parameters.p_folder_path",
+                            "type": "Expression"
+                          },
+                          "fileSystem": "landing"
+                        }
+                      },
+                      "externalReferences": {
+                        "connection": "[parameters('adls_connection')]"
+                      }
+                    },
+                    "enableLogging": false,
+                    "storeSettings": {
+                      "type": "AzureBlobFSReadSettings",
+                      "recursive": true,
+                      "enablePartitionDiscovery": false
+                    }
+                  }
+                }
+              ],
+              "ifTrueActivities": [
+                {
+                  "name": "nb_source_validation",
+                  "type": "TridentNotebook",
+                  "state": "Inactive",
+                  "onInactiveMarkAs": "Succeeded",
+                  "dependsOn": [],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "notebookId": "<NB_SOURCE_VALIDATION_ID>",
+                    "workspaceId": "<WORKSPACE_ID>",
+                    "parameters": {
+                      "container": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_container",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "folder_path": {
+                        "value": {
+                          "value": "@pipeline().parameters.p_folder_path",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "file_name": {
+                        "value": {
+                          "value": "@pipeline().parameters.p_file_name",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "source_name": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_name",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "primary_key": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].primary_key",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "required_timestamp_col": {
+                        "value": "",
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "nb_bronze_ingestion_call",
+                  "type": "TridentNotebook",
+                  "dependsOn": [
+                    {
+                      "activity": "nb_source_validation",
+                      "dependencyConditions": [
+                        "Succeeded"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "notebookId": "<NB_BRONZE_INGESTION_ID>",
+                    "workspaceId": "<WORKSPACE_ID>",
+                    "parameters": {
+                      "source_name": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_name",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "p_ingest_mode": {
+                        "value": {
+                          "value": "@pipeline().parameters.p_ingest_mode",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "p_source_key": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_key",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "p_file_name": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_file_name",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "p_source_type": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_type",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "cp_copy_to_archive",
+                  "type": "Copy",
+                  "state": "Inactive",
+                  "onInactiveMarkAs": "Succeeded",
+                  "dependsOn": [
+                    {
+                      "activity": "nb_bronze_ingestion_call",
+                      "dependencyConditions": [
+                        "Succeeded"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "source": {
+                      "type": "DelimitedTextSource",
+                      "storeSettings": {
+                        "type": "AzureBlobFSReadSettings",
+                        "recursive": true,
+                        "enablePartitionDiscovery": false
+                      },
+                      "formatSettings": {
+                        "type": "DelimitedTextReadSettings"
+                      },
+                      "datasetSettings": {
+                        "annotations": [],
+                        "type": "DelimitedText",
+                        "typeProperties": {
+                          "location": {
+                            "type": "AzureBlobFSLocation",
+                            "fileName": {
+                              "value": "@pipeline().parameters.p_file_name",
+                              "type": "Expression"
+                            },
+                            "folderPath": {
+                              "value": "@pipeline().parameters.p_folder_path",
+                              "type": "Expression"
+                            },
+                            "fileSystem": "landing"
+                          },
+                          "columnDelimiter": ",",
+                          "escapeChar": "\\",
+                          "firstRowAsHeader": true,
+                          "quoteChar": "\""
+                        },
+                        "schema": [],
+                        "externalReferences": {
+                          "connection": "[parameters('adls_connection')]"
+                        }
+                      }
+                    },
+                    "sink": {
+                      "type": "DelimitedTextSink",
+                      "storeSettings": {
+                        "type": "AzureBlobFSWriteSettings"
+                      },
+                      "formatSettings": {
+                        "type": "DelimitedTextWriteSettings",
+                        "fileExtension": ".txt"
+                      },
+                      "datasetSettings": {
+                        "annotations": [],
+                        "type": "DelimitedText",
+                        "typeProperties": {
+                          "location": {
+                            "type": "AzureBlobFSLocation",
+                            "fileName": {
+                              "value": "@pipeline().parameters.p_file_name",
+                              "type": "Expression"
+                            },
+                            "folderPath": {
+                              "value": "@concat('files/',first(activity('filter_matching_source').output.value).source_name)",
+                              "type": "Expression"
+                            },
+                            "fileSystem": "archive"
+                          },
+                          "columnDelimiter": ",",
+                          "escapeChar": "\\",
+                          "firstRowAsHeader": true,
+                          "quoteChar": "\""
+                        },
+                        "schema": [],
+                        "externalReferences": {
+                          "connection": "[parameters('adls_connection')]"
+                        }
+                      }
+                    },
+                    "enableStaging": false,
+                    "translator": {
+                      "type": "TabularTranslator",
+                      "typeConversion": true,
+                      "typeConversionSettings": {
+                        "allowDataTruncation": true,
+                        "treatBooleanAsNumber": false
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "del_landing_file",
+                  "type": "Delete",
+                  "state": "Inactive",
+                  "onInactiveMarkAs": "Succeeded",
+                  "dependsOn": [
+                    {
+                      "activity": "cp_copy_to_archive",
+                      "dependencyConditions": [
+                        "Skipped",
+                        "Succeeded"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "datasetSettings": {
+                      "annotations": [],
+                      "type": "Binary",
+                      "typeProperties": {
+                        "location": {
+                          "type": "AzureBlobFSLocation",
+                          "fileName": {
+                            "value": "@pipeline().parameters.p_file_name",
+                            "type": "Expression"
+                          },
+                          "folderPath": {
+                            "value": "@pipeline().parameters.p_folder_path",
+                            "type": "Expression"
+                          },
+                          "fileSystem": "landing"
+                        }
+                      },
+                      "externalReferences": {
+                        "connection": "[parameters('adls_connection')]"
+                      }
+                    },
+                    "enableLogging": false,
+                    "storeSettings": {
+                      "type": "AzureBlobFSReadSettings",
+                      "recursive": true,
+                      "enablePartitionDiscovery": false
+                    }
+                  }
+                },
+                {
+                  "name": "cp_reject_validation_fail",
+                  "description": "",
+                  "type": "Copy",
+                  "dependsOn": [
+                    {
+                      "activity": "nb_source_validation",
+                      "dependencyConditions": [
+                        "Failed"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "source": {
+                      "type": "DelimitedTextSource",
+                      "storeSettings": {
+                        "type": "AzureBlobFSReadSettings",
+                        "recursive": true,
+                        "enablePartitionDiscovery": false
+                      },
+                      "formatSettings": {
+                        "type": "DelimitedTextReadSettings"
+                      },
+                      "datasetSettings": {
+                        "annotations": [],
+                        "type": "DelimitedText",
+                        "typeProperties": {
+                          "location": {
+                            "type": "AzureBlobFSLocation",
+                            "fileName": {
+                              "value": "@pipeline().parameters.p_file_name",
+                              "type": "Expression"
+                            },
+                            "folderPath": {
+                              "value": "@pipeline().parameters.p_folder_path",
+                              "type": "Expression"
+                            },
+                            "fileSystem": "landing"
+                          },
+                          "columnDelimiter": ",",
+                          "escapeChar": "\\",
+                          "firstRowAsHeader": true,
+                          "quoteChar": "\""
+                        },
+                        "schema": [],
+                        "externalReferences": {
+                          "connection": "[parameters('adls_connection')]"
+                        }
+                      }
+                    },
+                    "sink": {
+                      "type": "DelimitedTextSink",
+                      "storeSettings": {
+                        "type": "AzureBlobFSWriteSettings"
+                      },
+                      "formatSettings": {
+                        "type": "DelimitedTextWriteSettings",
+                        "fileExtension": ".txt"
+                      },
+                      "datasetSettings": {
+                        "annotations": [],
+                        "type": "DelimitedText",
+                        "typeProperties": {
+                          "location": {
+                            "type": "AzureBlobFSLocation",
+                            "fileName": {
+                              "value": "@pipeline().parameters.p_file_name",
+                              "type": "Expression"
+                            },
+                            "folderPath": {
+                              "value": "@concat('validation-fail/',pipeline().parameters.p_folder_path)",
+                              "type": "Expression"
+                            },
+                            "fileSystem": "rejected"
+                          },
+                          "columnDelimiter": ",",
+                          "escapeChar": "\\",
+                          "firstRowAsHeader": true,
+                          "quoteChar": "\""
+                        },
+                        "schema": [],
+                        "externalReferences": {
+                          "connection": "[parameters('adls_connection')]"
+                        }
+                      }
+                    },
+                    "enableStaging": false,
+                    "translator": {
+                      "type": "TabularTranslator",
+                      "typeConversion": true,
+                      "typeConversionSettings": {
+                        "allowDataTruncation": true,
+                        "treatBooleanAsNumber": false
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "del_landing_file_validation_fail",
+                  "type": "Delete",
+                  "dependsOn": [
+                    {
+                      "activity": "cp_reject_validation_fail",
+                      "dependencyConditions": [
+                        "Succeeded"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "datasetSettings": {
+                      "annotations": [],
+                      "type": "Binary",
+                      "typeProperties": {
+                        "location": {
+                          "type": "AzureBlobFSLocation",
+                          "fileName": {
+                            "value": "@pipeline().parameters.p_file_name",
+                            "type": "Expression"
+                          },
+                          "folderPath": {
+                            "value": "@pipeline().parameters.p_folder_path",
+                            "type": "Expression"
+                          },
+                          "fileSystem": "landing"
+                        }
+                      },
+                      "externalReferences": {
+                        "connection": "[parameters('adls_connection')]"
+                      }
+                    },
+                    "enableLogging": false,
+                    "storeSettings": {
+                      "type": "AzureBlobFSReadSettings",
+                      "recursive": true,
+                      "enablePartitionDiscovery": false
+                    }
+                  }
+                },
+                {
+                  "name": "cp_reject_ingestion_fail",
+                  "type": "Copy",
+                  "dependsOn": [
+                    {
+                      "activity": "nb_bronze_ingestion_call",
+                      "dependencyConditions": [
+                        "Failed"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "source": {
+                      "type": "DelimitedTextSource",
+                      "storeSettings": {
+                        "type": "AzureBlobFSReadSettings",
+                        "recursive": true,
+                        "enablePartitionDiscovery": false
+                      },
+                      "formatSettings": {
+                        "type": "DelimitedTextReadSettings"
+                      },
+                      "datasetSettings": {
+                        "annotations": [],
+                        "type": "DelimitedText",
+                        "typeProperties": {
+                          "location": {
+                            "type": "AzureBlobFSLocation",
+                            "fileName": {
+                              "value": "@pipeline().parameters.p_file_name",
+                              "type": "Expression"
+                            },
+                            "folderPath": {
+                              "value": "@pipeline().parameters.p_folder_path",
+                              "type": "Expression"
+                            },
+                            "fileSystem": "landing"
+                          },
+                          "columnDelimiter": ",",
+                          "escapeChar": "\\",
+                          "firstRowAsHeader": true,
+                          "quoteChar": "\""
+                        },
+                        "schema": [],
+                        "externalReferences": {
+                          "connection": "[parameters('adls_connection')]"
+                        }
+                      }
+                    },
+                    "sink": {
+                      "type": "DelimitedTextSink",
+                      "storeSettings": {
+                        "type": "AzureBlobFSWriteSettings"
+                      },
+                      "formatSettings": {
+                        "type": "DelimitedTextWriteSettings",
+                        "fileExtension": ".txt"
+                      },
+                      "datasetSettings": {
+                        "annotations": [],
+                        "type": "DelimitedText",
+                        "typeProperties": {
+                          "location": {
+                            "type": "AzureBlobFSLocation",
+                            "fileName": {
+                              "value": "@pipeline().parameters.p_file_name",
+                              "type": "Expression"
+                            },
+                            "folderPath": {
+                              "value": "@concat('ingestion-fail/',pipeline().parameters.p_folder_path)",
+                              "type": "Expression"
+                            },
+                            "fileSystem": "rejected"
+                          },
+                          "columnDelimiter": ",",
+                          "escapeChar": "\\",
+                          "firstRowAsHeader": true,
+                          "quoteChar": "\""
+                        },
+                        "schema": [],
+                        "externalReferences": {
+                          "connection": "[parameters('adls_connection')]"
+                        }
+                      }
+                    },
+                    "enableStaging": false,
+                    "translator": {
+                      "type": "TabularTranslator",
+                      "typeConversion": true,
+                      "typeConversionSettings": {
+                        "allowDataTruncation": true,
+                        "treatBooleanAsNumber": false
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "del_landing_file_ingestion_fail",
+                  "type": "Delete",
+                  "dependsOn": [
+                    {
+                      "activity": "cp_reject_ingestion_fail",
+                      "dependencyConditions": [
+                        "Succeeded"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "datasetSettings": {
+                      "annotations": [],
+                      "type": "Binary",
+                      "typeProperties": {
+                        "location": {
+                          "type": "AzureBlobFSLocation",
+                          "fileName": {
+                            "value": "@pipeline().parameters.p_file_name",
+                            "type": "Expression"
+                          },
+                          "folderPath": {
+                            "value": "@pipeline().parameters.p_folder_path",
+                            "type": "Expression"
+                          },
+                          "fileSystem": "landing"
+                        }
+                      },
+                      "externalReferences": {
+                        "connection": "[parameters('adls_connection')]"
+                      }
+                    },
+                    "enableLogging": false,
+                    "storeSettings": {
+                      "type": "AzureBlobFSReadSettings",
+                      "recursive": true,
+                      "enablePartitionDiscovery": false
+                    }
+                  }
+                },
+                {
+                  "name": "nb_silver_transform_v3_call",
+                  "type": "TridentNotebook",
+                  "dependsOn": [
+                    {
+                      "activity": "del_landing_file",
+                      "dependencyConditions": [
+                        "Succeeded"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "notebookId": "<NB_SILVER_TRANSFORM_ID>",
+                    "workspaceId": "<WORKSPACE_ID>",
+                    "parameters": {
+                      "source_name": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_name",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "p_ingest_mode": {
+                        "value": {
+                          "value": "@pipeline().parameters.p_ingest_mode",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "p_source_key": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_key",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      " p_source_folder": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_folder",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      " p_file_name": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_file_name",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "p_source_type": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_type",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                {
+                  "name": "nbm_gold_transform_v3_call",
+                  "type": "TridentNotebook",
+                  "dependsOn": [
+                    {
+                      "activity": "nb_silver_transform_v3_call",
+                      "dependencyConditions": [
+                        "Succeeded"
+                      ]
+                    }
+                  ],
+                  "policy": {
+                    "timeout": "0.12:00:00",
+                    "retry": 0,
+                    "retryIntervalInSeconds": 30,
+                    "secureOutput": false,
+                    "secureInput": false
+                  },
+                  "typeProperties": {
+                    "notebookId": "<NB_GOLD_TRANSFORM_ID>",
+                    "workspaceId": "<WORKSPACE_ID>",
+                    "parameters": {
+                      " source_name": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_name",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "p_ingest_mode": {
+                        "value": {
+                          "value": "@pipeline().parameters.p_ingest_mode",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "p_source_key": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_key",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      " p_source_folder": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_folder",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      "p_file_name": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_file_name",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      },
+                      " p_source_type": {
+                        "value": {
+                          "value": "@activity('filter_matching_source').output.value[0].source_type",
+                          "type": "Expression"
+                        },
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "name": "email notification on success",
+            "type": "Office365Email",
+            "dependsOn": [
+              {
+                "activity": "if_source_matched",
+                "dependencyConditions": [
+                  "Succeeded"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "to": "<ALERT_EMAIL>",
+              "subject": "SUCCESS - pl_adls_to_bronze_v3_automation",
+              "body": "<p>Pipeline succeeded.</p>\n<p><br></p>\n<p>Pipeline: pl_adls_to_bronze_v3_automation</p>\n<p>Run ID: @{pipeline().RunId}</p>\n<p>Folder: @{pipeline().parameters.p_folder_path}</p>\n<p>File: @{pipeline().parameters.p_file_name}</p>\n<p>Source/Table: @{first(activity('filter_matching_source').output.value).source_name}</p>\n<p>Destination table: @{first(activity('filter_matching_source').output.value).destination_table}</p>"
+            },
+            "externalReferences": {
+              "connection": "[parameters('outlook_connection')]"
+            }
+          },
+          {
+            "name": "Office365Email1",
+            "type": "Office365Email",
+            "dependsOn": [
+              {
+                "activity": "if_source_matched",
+                "dependencyConditions": [
+                  "Failed"
+                ]
+              }
+            ],
+            "policy": {
+              "timeout": "0.12:00:00",
+              "retry": 0,
+              "retryIntervalInSeconds": 30,
+              "secureOutput": false,
+              "secureInput": false
+            },
+            "typeProperties": {
+              "to": "<ALERT_EMAIL>",
+              "subject": "FAILED - pl_adls_to_bronze_v3_automation",
+              "body": "<p>Pipeline failed.</p>\n<p><br></p>\n<p>Pipeline: pl_adls_to_bronze_v3_automation</p>\n<p>Run ID: @{pipeline().RunId}</p>\n<p>Folder: @{pipeline().parameters.p_folder_path}</p>\n<p>File: @{pipeline().parameters.p_file_name}</p>\n<p>Source/Table: @{if(greater(length(activity('filter_matching_source').output.value), 0), first(activity('filter_matching_source').output.value).source_name, 'No metadata match')}</p>\n<p>Destination table: @{if(greater(length(activity('filter_matching_source').output.value), 0), first(activity('filter_matching_source').output.value).destination_table, 'No metadata match')}</p>"
+            },
+            "externalReferences": {
+              "connection": "[parameters('outlook_connection')]"
+            }
+          }
+        ],
+        "parameters": {
+          "p_folder_path": {
+            "type": "string"
+          },
+          "p_file_name": {
+            "type": "string"
+          },
+          "p_ingest_mode": {
+            "type": "string",
+            "defaultValue": "ALL"
+          },
+          "p_source_key": {
+            "type": "string"
+          },
+          "p_source_folder": {
+            "type": "string"
+          },
+          "p_source_type": {
+            "type": "string"
+          },
+          "source_name": {
+            "type": "string"
+          }
+        },
+        "variables": {
+          "v_folder_clean": {
+            "type": "String"
+          }
+        }
+      },
+      "dependsOn": []
+    }
+  ]
+}
