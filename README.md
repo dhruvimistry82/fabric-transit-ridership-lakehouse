@@ -2,7 +2,6 @@
 
 A metadata-driven **Bronze → Silver → Gold** lakehouse in Microsoft Fabric for transit ridership data. Schedule, route, stop, trip and ridership files plus a vehicle-location API are ingested, cleaned into a dimensional model with data-quality checks, and published as Gold reporting tables. **Every job is driven by a control table**: adding a source or a transformation is a new row, not new pipeline code.
 
-> Built during my internship. This is a cleaned copy: client and vendor names, storage accounts, workspace / lakehouse / notebook IDs, endpoints, secrets and all data outputs have been removed or replaced with placeholders like `<storage_account>`.
 
 ## Architecture
 
